@@ -93,15 +93,65 @@ const getBalances = async (publicKey) => {
   }
 };
 
-// Resolve an asset code to a Stellar SDK Asset. Native XLM is the only
-// asset wired today; this is the seam where future assets (e.g. USDC and
-// other anchor-issued assets used by on/off-ramps and swaps) get added by
-// mapping a code+issuer instead of throwing.
-const resolveAsset = (asset) => {
-  if (!asset || asset === 'XLM' || asset === 'native') {
+// Resolve an asset code to a Stellar SDK Asset. Native XLM and USDC are
+// supported; this is the seam where future assets (e.g. other anchor-issued
+// assets used by on/off-ramps and swaps) get added by mapping a code+issuer.
+const resolveAsset = (assetCode) => {
+  if (!assetCode || assetCode === 'XLM' || assetCode === 'native') {
     return StellarSdk.Asset.native();
   }
-  throw new Error(`Unsupported asset: ${asset}`);
+  if (assetCode === 'USDC') {
+    return new StellarSdk.Asset('USDC', config.stellar.usdcIssuer);
+  }
+  throw new Error(`Unsupported asset: ${assetCode}`);
+};
+
+// Open a trustline for an issued asset (e.g. USDC) so the wallet can hold it.
+// Idempotent: if the trustline already exists, returns immediately without
+// submitting a transaction. An unfunded account produces a clear error.
+const establishTrustline = async ({ secretKey, assetCode }) => {
+  const asset = resolveAsset(assetCode);
+  if (asset.isNative()) {
+    throw new Error('Cannot establish trustline for native XLM.');
+  }
+
+  const sourceKeypair = StellarSdk.Keypair.fromSecret(secretKey);
+  const publicKey = sourceKeypair.publicKey();
+
+  let account;
+  try {
+    account = await server.loadAccount(publicKey);
+  } catch (error) {
+    if (error?.response?.status === 404) {
+      throw new Error('Account is not funded. Deposit XLM before establishing a trustline.');
+    }
+    throw error;
+  }
+
+  const existingTrustline = account.balances.find(
+    (b) => b.asset_code === asset.code && b.asset_issuer === asset.issuer,
+  );
+  if (existingTrustline) {
+    return { established: true, alreadyExisted: true };
+  }
+
+  const fee = await server.fetchBaseFee();
+  const networkPassphrase = config.stellar.network === 'testnet'
+    ? StellarSdk.Networks.TESTNET
+    : StellarSdk.Networks.PUBLIC;
+
+  const transaction = new StellarSdk.TransactionBuilder(account, {
+    fee,
+    networkPassphrase,
+  })
+    .addOperation(StellarSdk.Operation.changeTrust({ asset }))
+    .setTimeout(30)
+    .build();
+
+  transaction.sign(sourceKeypair);
+
+  await server.submitTransaction(transaction);
+  return { established: true, alreadyExisted: false };
 };
 
 const SEND_MAX_ATTEMPTS = 3;
@@ -190,6 +240,7 @@ module.exports = {
   getBalances,
   submitPayment,
   resolveAsset,
+  establishTrustline,
   validateAddress,
   fundTestnetAccount,
   getTransactionUrl,
