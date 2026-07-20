@@ -1,0 +1,18 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "feat/establish-trustline",
+    "main",
+    "origin"
+  ],
+  "parent": {
+    "feat/establish-trustline": "main",
+    "main": null,
+    "origin": "main"
+  },
+  "order": [
+    "main",
+    "feat/establish-trustline",
+    "origin"
+  ]
+}
